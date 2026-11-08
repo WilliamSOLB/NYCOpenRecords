@@ -13,6 +13,8 @@ from app import create_app, db as _db
 
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import event
+from sqlalchemy.orm import scoped_session, sessionmaker
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'helpers'))
 
@@ -81,14 +83,31 @@ def session(db: SQLAlchemy):
     """
     connection = db.engine.connect()
     transaction = connection.begin()
+    # Bind SQLAlchemy directly to the connection: Flask-SQLAlchemy 3 routes
+    # model queries through db.engines, ignoring a session's default bind.
+    factory = sessionmaker(bind=connection, query_cls=db.Query)
+    session_ = scoped_session(factory)
+    original_session = db.session
+    savepoint = connection.begin_nested()
 
-    options = dict(bind=connection, binds={})
-    session_ = db.create_scoped_session(options=options)
+    # Keep application rollback() calls inside the outer test transaction.
+    # Listen on the factory so remove() followed by a new session is safe too.
+    @event.listens_for(factory, 'after_transaction_end')
+    def restart_savepoint(session, ended_transaction):
+        nonlocal savepoint
+        if not savepoint.is_active:
+            savepoint = connection.begin_nested()
 
     db.session = session_
-
-    yield session_
-
-    transaction.rollback()
-    connection.close()
-    session_.remove()
+    try:
+        yield session_
+    finally:
+        event.remove(factory, 'after_transaction_end', restart_savepoint)
+        try:
+            session_.remove()
+        finally:
+            db.session = original_session
+            try:
+                transaction.rollback()
+            finally:
+                connection.close()
