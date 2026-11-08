@@ -5,7 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.models import Roles
-from conftest import session as session_fixture
+# Import the module so pytest does not register the autouse fixture twice.
+from tests import conftest
 
 
 @pytest.mark.parametrize('iteration', range(2))
@@ -69,7 +70,7 @@ def test_app_context_teardown_keeps_transaction_isolated(app, db, session):
 @pytest.mark.parametrize('raise_error', [False, True])
 def test_fixture_cleanup_restores_session_and_rolls_back(db, raise_error):
     original_session = db.session
-    fixture = session_fixture.__wrapped__(db)
+    fixture = conftest.session.__wrapped__(db)
     isolated_session = next(fixture)
     connection = isolated_session.get_bind()
     isolated_session.add(Roles(name='fixture-cleanup-role', permissions=0))
